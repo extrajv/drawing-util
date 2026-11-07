@@ -1,6 +1,5 @@
 --!nocheck
 local DrawingUtil = {}
-local RunService = game:GetService("RunService")
 local NEAR_PLANE = 0.05
 
 local LINE_INDICES = {
@@ -39,7 +38,6 @@ local TEXT_PROPERTIES = {
 local active_handles = {}
 -- Weak keys allow destroyed/unreferenced targets to be garbage-collected.
 local target_handles = setmetatable({}, { __mode = "k" })
-local render_connection
 
 local function create_drawing(drawing_type, defaults, options, allowed_properties)
     if Drawing == nil or type(Drawing.new) ~= "function" then
@@ -180,44 +178,6 @@ local function project_point(camera, world_position)
     return Vector2.new(screen_point.X, screen_point.Y), on_screen
 end
 
-local function stop_renderer_if_idle()
-    if next(active_handles) == nil and render_connection then
-        render_connection:Disconnect()
-        render_connection = nil
-    end
-end
-
-local function start_renderer()
-    if render_connection then
-        return
-    end
-
-    render_connection = RunService.RenderStepped:Connect(function()
-        local camera = workspace.CurrentCamera
-
-        for handle in pairs(active_handles) do
-            if handle._removed then
-                active_handles[handle] = nil
-                continue
-            end
-
-            if not handle._enabled or not camera then
-                hide_handle(handle)
-                continue
-            end
-
-            local success, err = pcall(handle._update, handle, camera)
-
-            if not success then
-                warn("[DrawingUtil] Update failed:", err)
-                handle:Remove()
-            end
-        end
-
-        stop_renderer_if_idle()
-    end)
-end
-
 local function get_target_handle(target, drawing_kind)
     local handles = target_handles[target]
     return handles and handles[drawing_kind] or nil
@@ -292,16 +252,34 @@ local function create_handle(drawings, update_function, target, drawing_kind)
             remove_drawing(drawing)
         end
 
-        stop_renderer_if_idle()
     end
 
     handle.Destroy = handle.Remove
 
     active_handles[handle] = true
     register_target_handle(target, drawing_kind, handle)
-    start_renderer()
 
     return handle
+end
+
+-- Updates every active drawing once. Call this from your own loop (e.g. RenderStepped).
+-- An optional Camera can be supplied; otherwise workspace.CurrentCamera is used.
+function DrawingUtil.update(camera)
+    camera = camera or workspace.CurrentCamera
+
+    for handle in pairs(active_handles) do
+        if handle._removed then
+            active_handles[handle] = nil
+        elseif not handle._enabled or not camera then
+            hide_handle(handle)
+        else
+            local success, err = pcall(handle._update, handle, camera)
+            if not success then
+                warn("[DrawingUtil] Update failed:", err)
+                handle:Remove()
+            end
+        end
+    end
 end
 
 function DrawingUtil.drawBox(target, options)
