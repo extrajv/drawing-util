@@ -237,13 +237,30 @@ end
 
 -- Draws a box for the current paint only.
 -- Call this again from the next GetPaint callback to keep it visible.
--- Build an attachment frame relative to a BasePart or Model bounds.
--- Offset is target-local; Rotation accepts a CFrame or Vector3 Euler angles (radians).
-local function get_attachment_frame(target, options)
-    local base_cf, bounds_size = get_bounds(target)
-    if not base_cf or not bounds_size then return nil, nil end
+-- Resolve a stable attachment origin. BaseParts use their exact CFrame;
+-- Models use GetPivot(), NOT the changing bounding-box center. This prevents
+-- animated limbs / changing model bounds from moving the attachment frame.
+local function get_target_origin(target)
+    if target:IsA("BasePart") then
+        return target.CFrame
+    end
 
-    local offset = options.Offset or Vector3.zero
+    local ok, pivot = pcall(function()
+        return target:GetPivot()
+    end)
+    if ok then return pivot end
+    return nil
+end
+
+-- Build a frame relative to the target's stable origin. Offset is always in
+-- target-local studs. Rotation accepts a CFrame or Vector3 Euler angles (radians).
+local function get_attachment_frame(target, options, default_offset)
+    local origin = get_target_origin(target)
+    local _, bounds_size = get_bounds(target)
+    if not origin or not bounds_size then return nil, nil end
+
+    local offset = options.Offset
+    if offset == nil then offset = default_offset or Vector3.zero end
     if typeof(offset) ~= "Vector3" then
         error("Offset must be a target-local Vector3.", 3)
     end
@@ -257,7 +274,7 @@ local function get_attachment_frame(target, options)
         error("Rotation must be a Vector3 (radians) or CFrame.", 3)
     end
 
-    return base_cf * CFrame.new(offset) * rotation, bounds_size
+    return origin * CFrame.new(offset) * rotation, bounds_size
 end
 
 local function project_triangle(camera, a, b, c)
@@ -292,7 +309,12 @@ function DrawingUtil.drawFilledBox(target, options)
     local camera = get_camera(options)
     if not camera then return end
 
-    local frame, bounds_size = get_attachment_frame(target, options)
+    local _, bounds_size = get_bounds(target)
+    if not bounds_size then return end
+    -- The cuboid is centered on the true target origin by default. Set Offset
+    -- explicitly to move it in target-local studs; it will never inherit a
+    -- recomputed Model:GetBoundingBox() center.
+    local frame = get_attachment_frame(target, options, Vector3.zero)
     if not frame then return end
     local size = options.Size or bounds_size
     if typeof(size) ~= "Vector3" or size.X <= 0 or size.Y <= 0 or size.Z <= 0 then
@@ -542,7 +564,7 @@ function DrawingUtil.remove(_target)
 end
 
 function DrawingUtil.removeAll()
-    cleardrawcache()
+    -- Nothing is retained between paint callbacks.
 end
 
 DrawingUtil.destroy = DrawingUtil.removeAll
