@@ -37,6 +37,8 @@ local TEXT_PROPERTIES = {
 }
 
 local active_handles = {}
+-- Weak keys allow destroyed/unreferenced targets to be garbage-collected.
+local target_handles = setmetatable({}, { __mode = "k" })
 local render_connection
 
 local function create_drawing(drawing_type, defaults, options, allowed_properties)
@@ -216,7 +218,48 @@ local function start_renderer()
     end)
 end
 
-local function create_handle(drawings, update_function)
+local function get_target_handle(target, drawing_kind)
+    local handles = target_handles[target]
+    return handles and handles[drawing_kind] or nil
+end
+
+local function register_target_handle(target, drawing_kind, handle)
+    if not target then
+        return
+    end
+
+    local handles = target_handles[target]
+    if not handles then
+        handles = {}
+        target_handles[target] = handles
+    end
+
+    handles[drawing_kind] = handle
+    handle._target = target
+    handle._drawing_kind = drawing_kind
+end
+
+local function unregister_target_handle(handle)
+    local target = handle._target
+    local drawing_kind = handle._drawing_kind
+
+    if not target or not drawing_kind then
+        return
+    end
+
+    local handles = target_handles[target]
+    if handles and handles[drawing_kind] == handle then
+        handles[drawing_kind] = nil
+        if next(handles) == nil then
+            target_handles[target] = nil
+        end
+    end
+
+    handle._target = nil
+    handle._drawing_kind = nil
+end
+
+local function create_handle(drawings, update_function, target, drawing_kind)
     local handle = {
         drawings = drawings,
         _removed = false,
@@ -243,6 +286,7 @@ local function create_handle(drawings, update_function)
 
         self._removed = true
         active_handles[self] = nil
+        unregister_target_handle(self)
 
         for _, drawing in ipairs(self.drawings) do
             remove_drawing(drawing)
@@ -254,6 +298,7 @@ local function create_handle(drawings, update_function)
     handle.Destroy = handle.Remove
 
     active_handles[handle] = true
+    register_target_handle(target, drawing_kind, handle)
     start_renderer()
 
     return handle
@@ -261,6 +306,12 @@ end
 
 function DrawingUtil.drawBox(target, options)
     validate_target(target, "drawBox")
+
+    local existing = get_target_handle(target, "Box")
+    if existing and not existing._removed then
+        return existing
+    end
+
     options = options or {}
 
     local lines = table.create(#LINE_INDICES)
@@ -302,11 +353,16 @@ function DrawingUtil.drawBox(target, options)
                 line.Visible = false
             end
         end
-    end)
+    end, target, "Box")
 end
 
 function DrawingUtil.drawText(target, text, options)
     validate_target(target, "drawText")
+
+    local existing = get_target_handle(target, "Text")
+    if existing and not existing._removed then
+        return existing
+    end
 
     if text == nil then
         error("drawText expects text as its second argument.", 2)
@@ -354,7 +410,7 @@ function DrawingUtil.drawText(target, text, options)
 
         drawing.Position = screen_position
         drawing.Visible = true
-    end)
+    end, target, "Text")
 
     handle.Drawing = drawing
 
@@ -427,6 +483,29 @@ function DrawingUtil.drawPointer(position1, position2, options)
 
     return handle
 end
+
+-- Removes every DrawingUtil handle associated with this BasePart or Model.
+function DrawingUtil.remove(target)
+    validate_target(target, "remove")
+
+    local handles_by_kind = target_handles[target]
+    if not handles_by_kind then
+        return false
+    end
+
+    local handles = {}
+    for _, handle in pairs(handles_by_kind) do
+        handles[#handles + 1] = handle
+    end
+
+    for _, handle in ipairs(handles) do
+        handle:Remove()
+    end
+
+    return #handles > 0
+end
+
+DrawingUtil.removeDrawing = DrawingUtil.remove
 
 function DrawingUtil.removeAll()
     local handles = {}
